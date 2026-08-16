@@ -1,59 +1,345 @@
+/* =========================================================
+   TERRAPULSE V3
+   NASA EONET Earth Event Intelligence Dashboard
+   ========================================================= */
+
 const API_URL =
   "https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=1000";
 
+const CACHE_KEY = "terrapulse-last-events-v3";
+const WATCHLIST_KEY = "terrapulse-watchlist-v3";
+
 let allEvents = [];
 let filteredEvents = [];
+let watchlist = new Set(
+  JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]")
+);
 
-const map = L.map("map", {
-  worldCopyJump: true
+let map;
+let markersLayer;
+let currentMarkerById = new Map();
+
+const $ = id => document.getElementById(id);
+
+/* =========================================================
+   REQUIRED EXISTING ELEMENTS
+   ========================================================= */
+
+const eventCount = $("eventCount");
+const categoryCount = $("categoryCount");
+const highCount = $("highCount");
+const lastRefresh = $("lastRefresh");
+
+const categorySelect = $("categorySelect");
+const scoreSelect = $("scoreSelect");
+const searchInput = $("searchInput");
+
+const eventList = $("eventList");
+const feedMeta = $("feedMeta");
+const mapMeta = $("mapMeta");
+
+const refreshBtn = $("refreshBtn");
+const clearBtn = $("clearBtn");
+
+const toast = $("toast");
+
+/* =========================================================
+   MAP
+   ========================================================= */
+
+map = L.map("map", {
+  worldCopyJump: true,
+  minZoom: 2,
+  maxZoom: 18,
+  scrollWheelZoom: true
 }).setView([20, 0], 2);
 
 L.tileLayer(
   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
   {
-    maxZoom: 18,
+    maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors"
   }
 ).addTo(map);
 
-const markers = L.layerGroup().addTo(map);
+markersLayer = L.layerGroup().addTo(map);
 
-const eventCount = document.getElementById("eventCount");
-const categoryCount = document.getElementById("categoryCount");
-const highCount = document.getElementById("highCount");
-const lastRefresh = document.getElementById("lastRefresh");
+/* =========================================================
+   DYNAMIC STYLES
+   We inject the extra UI styles from JavaScript so that
+   you do NOT need to edit styles.css again.
+   ========================================================= */
 
-const categorySelect =
-  document.getElementById("categorySelect");
+const dynamicStyle = document.createElement("style");
 
-const scoreSelect =
-  document.getElementById("scoreSelect");
+dynamicStyle.textContent = `
+  .tp-extra {
+    margin: 16px 0;
+    padding: 16px;
+    border: 1px solid #244866;
+    border-radius: 18px;
+    background: rgba(10, 30, 49, .82);
+  }
 
-const searchInput =
-  document.getElementById("searchInput");
+  .tp-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
 
-const eventList =
-  document.getElementById("eventList");
+  .tp-mini {
+    padding: 12px;
+    border: 1px solid #244866;
+    border-radius: 14px;
+    background: rgba(255,255,255,.025);
+  }
 
-const feedMeta =
-  document.getElementById("feedMeta");
+  .tp-mini span {
+    display: block;
+    color: #8fa6bf;
+    font-size: 11px;
+  }
 
-const mapMeta =
-  document.getElementById("mapMeta");
+  .tp-mini strong {
+    display: block;
+    font-size: 22px;
+    margin-top: 4px;
+  }
 
-const refreshBtn =
-  document.getElementById("refreshBtn");
+  .tp-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
 
-const clearBtn =
-  document.getElementById("clearBtn");
+  .tp-toolbar select,
+  .tp-toolbar button {
+    border: 1px solid #294863;
+    background: #091a2c;
+    color: #eef7ff;
+    border-radius: 10px;
+    padding: 9px 11px;
+  }
 
-const toast =
-  document.getElementById("toast");
+  .tp-toolbar button {
+    cursor: pointer;
+  }
 
+  .tp-toolbar button:hover {
+    background: #15324b;
+  }
 
-/* ================================
+  .tp-alert {
+    margin-bottom: 16px;
+    padding: 15px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 115, 130, .35);
+    background: rgba(110, 30, 45, .22);
+  }
+
+  .tp-alert-title {
+    font-size: 17px;
+    font-weight: 800;
+  }
+
+  .tp-alert-text {
+    margin-top: 5px;
+    color: #b8c8d9;
+    font-size: 13px;
+  }
+
+  .tp-danger {
+    border-color: rgba(255, 115, 130, .35);
+    background: rgba(110, 30, 45, .16);
+  }
+
+  .tp-event-reasons {
+    margin-top: 10px;
+    padding: 11px 12px;
+    border-radius: 12px;
+    background: rgba(255,255,255,.035);
+    font-size: 12px;
+  }
+
+  .tp-event-reasons strong {
+    display: block;
+    margin-bottom: 5px;
+    color: #dcecff;
+  }
+
+  .tp-event-reasons ul {
+    margin: 0;
+    padding-left: 18px;
+    color: #9fb3c8;
+  }
+
+  .tp-event-reasons li {
+    margin: 3px 0;
+  }
+
+  .tp-scorebar {
+    height: 7px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255,255,255,.08);
+    margin-top: 9px;
+  }
+
+  .tp-scorefill {
+    height: 100%;
+    border-radius: 999px;
+  }
+
+  .tp-watch {
+    border: 0;
+    background: transparent;
+    color: #7f96ae;
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+  }
+
+  .tp-watch.saved {
+    color: #5de0ff;
+  }
+
+  .tp-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+
+  .tp-action {
+    border: 1px solid #294863;
+    background: #0a1d31;
+    color: #e9f5ff;
+    border-radius: 9px;
+    padding: 7px 9px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .tp-action:hover {
+    background: #15324b;
+  }
+
+  .tp-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(2, 10, 18, .72);
+    backdrop-filter: blur(6px);
+  }
+
+  .tp-modal-backdrop.open {
+    display: flex;
+  }
+
+  .tp-modal {
+    width: min(680px, 100%);
+    max-height: 88vh;
+    overflow: auto;
+    background: #0b1d31;
+    border: 1px solid #294863;
+    border-radius: 20px;
+    padding: 20px;
+    box-shadow: 0 25px 90px rgba(0,0,0,.45);
+  }
+
+  .tp-modal-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .tp-modal h3 {
+    margin: 0;
+    font-size: 24px;
+  }
+
+  .tp-modal-close {
+    border: 1px solid #294863;
+    background: #0a1a2b;
+    color: #fff;
+    border-radius: 10px;
+    padding: 7px 10px;
+    cursor: pointer;
+  }
+
+  .tp-detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 16px;
+  }
+
+  .tp-detail {
+    border: 1px solid #23425f;
+    border-radius: 12px;
+    padding: 12px;
+    background: rgba(255,255,255,.025);
+  }
+
+  .tp-detail span {
+    display: block;
+    color: #8fa6bf;
+    font-size: 11px;
+  }
+
+  .tp-detail strong {
+    display: block;
+    margin-top: 4px;
+  }
+
+  .tp-modal-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #203d5b;
+  }
+
+  .tp-muted {
+    color: #8fa6bf;
+    font-size: 13px;
+  }
+
+  .tp-link {
+    color: #5de0ff;
+    text-decoration: none;
+  }
+
+  .tp-link:hover {
+    text-decoration: underline;
+  }
+
+  @media (max-width: 800px) {
+    .tp-summary-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .tp-detail-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .tp-summary-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+`;
+
+document.head.appendChild(dynamicStyle);
+
+/* =========================================================
    TOAST
-================================ */
+   ========================================================= */
 
 function showToast(message) {
   if (!toast) return;
@@ -61,85 +347,390 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.add("show");
 
-  setTimeout(() => {
+  clearTimeout(showToast.timer);
+
+  showToast.timer = setTimeout(() => {
     toast.classList.remove("show");
-  }, 2200);
+  }, 2500);
 }
 
+/* =========================================================
+   STORAGE
+   ========================================================= */
 
-/* ================================
-   EVENT SCORING
-================================ */
+function saveWatchlist() {
+  localStorage.setItem(
+    WATCHLIST_KEY,
+    JSON.stringify([...watchlist])
+  );
+}
+
+function cacheEvents(events) {
+  try {
+    localStorage.setItem(
+      CACHE_KEY,
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        events
+      })
+    );
+  } catch (error) {
+    console.warn("Could not cache events:", error);
+  }
+}
+
+function readCachedEvents() {
+  try {
+    const raw =
+      localStorage.getItem(CACHE_KEY);
+
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+
+    if (
+      !parsed ||
+      !Array.isArray(parsed.events)
+    ) {
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+/* =========================================================
+   TEXT HELPERS
+   ========================================================= */
+
+function escapeHTML(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "Unknown";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function getLatestGeometry(event) {
+  if (
+    !event.geometry ||
+    !event.geometry.length
+  ) {
+    return null;
+  }
+
+  return event.geometry[
+    event.geometry.length - 1
+  ];
+}
+
+function getEventDate(event) {
+  const geometry =
+    getLatestGeometry(event);
+
+  return (
+    geometry?.date ||
+    event.closed ||
+    event.date ||
+    null
+  );
+}
+
+function daysSince(value) {
+  if (!value) return Infinity;
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return Infinity;
+  }
+
+  return (
+    Date.now() - date.getTime()
+  ) / 86400000;
+}
+
+/* =========================================================
+   CATEGORY HELPERS
+   ========================================================= */
+
+function getPrimaryCategory(event) {
+  return (
+    event.categories?.[0]?.title ||
+    "Earth event"
+  );
+}
+
+function getCategoryIds(event) {
+  return (
+    event.categories || []
+  ).map(category => category.id);
+}
+
+function getCategoryNames(event) {
+  return (
+    event.categories || []
+  )
+    .map(category => category.title || "")
+    .join(" ");
+}
+
+/* =========================================================
+   SMART SCORE
+   ========================================================= */
 
 function scoreEvent(event) {
   const title =
     (event.title || "").toLowerCase();
 
   const categories =
-    (event.categories || [])
-      .map(c => c.title || "")
-      .join(" ")
-      .toLowerCase();
+    getCategoryNames(event).toLowerCase();
 
-  let score = 20;
+  let score = 15;
 
-  const highWords = [
-    "volcano",
+  /*
+    EVENT TYPE
+    -------------------------------------------------------
+    These are NOT official NASA risk levels.
+    They are only TerraPulse's own prioritization heuristic.
+  */
+
+  const veryHighKeywords = [
     "earthquake",
     "tsunami",
+    "volcano",
     "wildfire",
     "hurricane",
-    "cyclone",
     "typhoon",
+    "cyclone",
     "tropical storm"
   ];
 
-  const mediumWords = [
+  const mediumKeywords = [
     "flood",
-    "dust",
     "storm",
     "landslide",
+    "dust",
     "severe storm",
-    "iceberg"
+    "iceberg",
+    "drought",
+    "temperature"
   ];
 
   if (
-    highWords.some(word =>
-      title.includes(word) ||
-      categories.includes(word)
+    veryHighKeywords.some(
+      word =>
+        title.includes(word) ||
+        categories.includes(word)
     )
   ) {
-    score += 55;
+    score += 48;
   } else if (
-    mediumWords.some(word =>
-      title.includes(word) ||
-      categories.includes(word)
+    mediumKeywords.some(
+      word =>
+        title.includes(word) ||
+        categories.includes(word)
     )
   ) {
-    score += 30;
+    score += 28;
+  } else {
+    score += 8;
   }
 
-  if (
-    event.geometry &&
-    event.geometry.length > 0
-  ) {
+  /*
+    RECENCY
+  */
+
+  const age =
+    daysSince(getEventDate(event));
+
+  if (age <= 1) {
+    score += 20;
+  } else if (age <= 3) {
+    score += 15;
+  } else if (age <= 7) {
     score += 10;
+  } else if (age <= 30) {
+    score += 5;
   }
 
+  /*
+    LOCATION QUALITY
+  */
+
+  const geometry =
+    getLatestGeometry(event);
+
   if (
-    event.sources &&
+    geometry &&
+    Array.isArray(geometry.coordinates)
+  ) {
+    score += 7;
+  }
+
+  /*
+    SOURCE AVAILABILITY
+  */
+
+  if (
+    Array.isArray(event.sources) &&
     event.sources.length > 0
   ) {
     score += 5;
   }
 
-  return Math.min(score, 100);
+  return Math.min(
+    Math.round(score),
+    100
+  );
 }
 
+/* =========================================================
+   SCORE EXPLANATION
+   ========================================================= */
 
-/* ================================
-   DANGER LEVEL
-================================ */
+function explainScore(event) {
+  const reasons = [];
+
+  const title =
+    (event.title || "").toLowerCase();
+
+  const categories =
+    getCategoryNames(event).toLowerCase();
+
+  const age =
+    daysSince(getEventDate(event));
+
+  const veryHighKeywords = [
+    "earthquake",
+    "tsunami",
+    "volcano",
+    "wildfire",
+    "hurricane",
+    "typhoon",
+    "cyclone",
+    "tropical storm"
+  ];
+
+  const mediumKeywords = [
+    "flood",
+    "storm",
+    "landslide",
+    "dust",
+    "severe storm",
+    "iceberg",
+    "drought",
+    "temperature"
+  ];
+
+  if (
+    veryHighKeywords.some(
+      word =>
+        title.includes(word) ||
+        categories.includes(word)
+    )
+  ) {
+    reasons.push(
+      "Event type is one TerraPulse treats as a high-attention category."
+    );
+  } else if (
+    mediumKeywords.some(
+      word =>
+        title.includes(word) ||
+        categories.includes(word)
+    )
+  ) {
+    reasons.push(
+      "Event type is treated as a medium-attention category."
+    );
+  } else {
+    reasons.push(
+      "The event is an active natural-event record from NASA EONET."
+    );
+  }
+
+  if (age <= 1) {
+    reasons.push(
+      "The latest event metadata is very recent."
+    );
+  } else if (age <= 7) {
+    reasons.push(
+      "The latest event metadata was updated recently."
+    );
+  } else if (Number.isFinite(age)) {
+    reasons.push(
+      "The event has older available metadata."
+    );
+  }
+
+  const geometry =
+    getLatestGeometry(event);
+
+  if (
+    geometry &&
+    Array.isArray(geometry.coordinates)
+  ) {
+    reasons.push(
+      "Geographic coordinates are available."
+    );
+  }
+
+  if (
+    Array.isArray(event.sources) &&
+    event.sources.length
+  ) {
+    reasons.push(
+      "A source reference is available."
+    );
+  }
+
+  let recommendation =
+    "Continue monitoring the available data.";
+
+  const score =
+    scoreEvent(event);
+
+  if (score >= 80) {
+    recommendation =
+      "High attention signal — inspect the source and event details.";
+  } else if (score >= 60) {
+    recommendation =
+      "Worth monitoring for changes.";
+  }
+
+  return {
+    score,
+    reasons,
+    recommendation
+  };
+}
+
+/* =========================================================
+   SCORE LABELS
+   ========================================================= */
 
 function getScoreClass(score) {
   if (score >= 70) return "high";
@@ -153,21 +744,19 @@ function getScoreLabel(score) {
   return "LOW";
 }
 
+function getScoreColor(score) {
+  if (score >= 70) return "#ff657a";
+  if (score >= 40) return "#ffc85c";
+  return "#62e6bd";
+}
 
-/* ================================
+/* =========================================================
    COORDINATES
-================================ */
+   ========================================================= */
 
 function getCoordinates(event) {
-  if (
-    !event.geometry ||
-    event.geometry.length === 0
-  ) {
-    return null;
-  }
-
   const geometry =
-    event.geometry[event.geometry.length - 1];
+    getLatestGeometry(event);
 
   if (
     !geometry ||
@@ -177,65 +766,78 @@ function getCoordinates(event) {
   }
 
   if (geometry.type === "Point") {
-    return [
-      geometry.coordinates[1],
-      geometry.coordinates[0]
-    ];
-  }
+    const coords =
+      geometry.coordinates;
 
-  return null;
-}
-
-
-/* ================================
-   DATE
-================================ */
-
-function formatDate(dateString) {
-  if (!dateString) {
-    return "Unknown date";
-  }
-
-  const date = new Date(dateString);
-
-  if (Number.isNaN(date.getTime())) {
-    return "Unknown date";
-  }
-
-  return date.toLocaleDateString(
-    undefined,
-    {
-      year: "numeric",
-      month: "short",
-      day: "numeric"
+    if (
+      coords.length >= 2 &&
+      Number.isFinite(coords[0]) &&
+      Number.isFinite(coords[1])
+    ) {
+      return [
+        coords[1],
+        coords[0]
+      ];
     }
-  );
+
+    return null;
+  }
+
+  /*
+    Basic anchor for non-point geometry.
+    This is for visualization only.
+  */
+
+  let pair = null;
+
+  const stack = [
+    geometry.coordinates
+  ];
+
+  while (
+    !pair &&
+    stack.length
+  ) {
+    const current =
+      stack.pop();
+
+    if (!Array.isArray(current)) {
+      continue;
+    }
+
+    if (
+      current.length >= 2 &&
+      typeof current[0] === "number" &&
+      typeof current[1] === "number"
+    ) {
+      pair = current;
+      break;
+    }
+
+    current.forEach(item => {
+      if (Array.isArray(item)) {
+        stack.push(item);
+      }
+    });
+  }
+
+  if (!pair) return null;
+
+  return [
+    pair[1],
+    pair[0]
+  ];
 }
 
-
-/* ================================
-   HTML SECURITY
-================================ */
-
-function escapeHTML(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-
-/* ================================
+/* =========================================================
    CATEGORIES
-================================ */
+   ========================================================= */
 
 function getCategories(events) {
-  const categories = new Map();
+  const categories =
+    new Map();
 
   events.forEach(event => {
-
     (event.categories || [])
       .forEach(category => {
 
@@ -251,19 +853,17 @@ function getCategories(events) {
         }
 
       });
-
   });
 
   return [
     ...categories.entries()
-  ].sort((a, b) =>
-    a[1].localeCompare(b[1])
+  ].sort(
+    (a, b) =>
+      a[1].localeCompare(b[1])
   );
 }
 
-
 function updateCategoryOptions() {
-
   const current =
     categorySelect.value;
 
@@ -285,747 +885,218 @@ function updateCategoryOptions() {
 
   if (
     [...categorySelect.options]
-      .some(option =>
-        option.value === current
+      .some(
+        option =>
+          option.value === current
       )
   ) {
     categorySelect.value = current;
   }
 }
 
-
-/* ================================
-   DANGER ZONE
-================================ */
-
-function getDangerEvents(events) {
-
-  return [...events]
-    .map(event => ({
-      event,
-      score: scoreEvent(event)
-    }))
-    .filter(item =>
-      item.score >= 70
-    )
-    .sort((a, b) =>
-      b.score - a.score
-    )
-    .slice(0, 10);
-}
-
-
-function createDangerZone() {
-
-  let danger =
-    document.getElementById(
-      "terraPulseDangerZone"
-    );
-
-  if (danger) return danger;
-
-  danger =
-    document.createElement("section");
-
-  danger.id =
-    "terraPulseDangerZone";
-
-  danger.style.margin =
-    "24px 0";
-
-  danger.style.padding =
-    "20px";
-
-  danger.style.border =
-    "1px solid rgba(255,90,90,.35)";
-
-  danger.style.borderRadius =
-    "20px";
-
-  danger.style.background =
-    "rgba(100,20,30,.18)";
-
-  danger.innerHTML = `
-    <div style="
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:12px;
-      margin-bottom:16px;
-    ">
-      <div>
-        <h2 style="
-          margin:0;
-          font-size:24px;
-        ">
-          ⚠️ Danger Zone
-        </h2>
-
-        <p style="
-          margin:6px 0 0;
-          opacity:.7;
-        ">
-          Highest-priority NASA EONET signals
-        </p>
-      </div>
-
-      <strong
-        id="dangerZoneCount"
-        style="
-          font-size:22px;
-        "
-      >
-        0
-      </strong>
-    </div>
-
-    <div id="dangerZoneList"></div>
-
-    <p style="
-      margin:16px 0 0;
-      font-size:12px;
-      opacity:.55;
-    ">
-      TerraPulse priority score is an experimental
-      classification based on event metadata.
-      It is not an official NASA warning level.
-    </p>
-  `;
-
-  const container =
-    eventList.parentElement;
-
-  if (container) {
-    container.parentElement
-      .insertBefore(
-        danger,
-        container
-      );
-  }
-
-  return danger;
-}
-
-
-function renderDangerZone(events) {
-
-  const danger =
-    createDangerZone();
-
-  const list =
-    document.getElementById(
-      "dangerZoneList"
-    );
-
-  const count =
-    document.getElementById(
-      "dangerZoneCount"
-    );
-
-  if (!list || !count) return;
-
-  const dangerous =
-    getDangerEvents(events);
-
-  count.textContent =
-    dangerous.length;
-
-  list.innerHTML = "";
-
-  if (dangerous.length === 0) {
-
-    list.innerHTML = `
-      <div style="
-        padding:16px;
-        border-radius:12px;
-        background:rgba(255,255,255,.04);
-      ">
-        ✓ No high-priority signals
-        detected in the current selection.
-      </div>
-    `;
-
-    return;
-  }
-
-  dangerous.forEach(item => {
-
-    const event =
-      item.event;
-
-    const score =
-      item.score;
-
-    const category =
-      event.categories?.[0]?.title ||
-      "Earth event";
-
-    const date =
-      event.geometry?.at(-1)?.date;
-
-    const coordinates =
-      getCoordinates(event);
-
-    const card =
-      document.createElement("div");
-
-    card.style.padding =
-      "14px";
-
-    card.style.marginBottom =
-      "10px";
-
-    card.style.borderRadius =
-      "14px";
-
-    card.style.background =
-      "rgba(255,255,255,.05)";
-
-    card.style.cursor =
-      coordinates
-        ? "pointer"
-        : "default";
-
-    card.innerHTML = `
-      <div style="
-        display:flex;
-        justify-content:space-between;
-        gap:12px;
-        align-items:flex-start;
-      ">
-
-        <div>
-          <strong>
-            ${escapeHTML(
-              event.title ||
-              "Unnamed event"
-            )}
-          </strong>
-
-          <div style="
-            margin-top:5px;
-            opacity:.7;
-            font-size:13px;
-          ">
-            ${escapeHTML(category)}
-            •
-            ${formatDate(date)}
-          </div>
-        </div>
-
-        <span style="
-          white-space:nowrap;
-          font-weight:700;
-        ">
-          ${score}/100
-        </span>
-
-      </div>
-    `;
-
-    if (coordinates) {
-
-      card.addEventListener(
-        "click",
-        () => {
-
-          map.setView(
-            coordinates,
-            6,
-            {
-              animate: true
-            }
-          );
-
-          showToast(
-            "Showing event on map"
-          );
-        }
-      );
-
-    }
-
-    list.appendChild(card);
-  });
-}
-
-
-/* ================================
-   MAP MARKERS
-================================ */
-
-function renderMarkers(events) {
-
-  markers.clearLayers();
-
-  events.forEach(event => {
-
-    const coordinates =
-      getCoordinates(event);
-
-    if (!coordinates) return;
-
-    const score =
-      scoreEvent(event);
-
-    const category =
-      event.categories?.[0]?.title ||
-      "Earth event";
-
-    const marker =
-      L.circleMarker(
-        coordinates,
-        {
-          radius:
-            score >= 70
-              ? 9
-              : score >= 40
-                ? 7
-                : 5,
-
-          weight: 2,
-
-          opacity: .9,
-
-          fillOpacity: .75
-        }
-      );
-
-    marker.bindPopup(`
-      <div class="popup-title">
-        ${escapeHTML(
-          event.title ||
-          "Unnamed event"
-        )}
-      </div>
-
-      <div>
-        ${escapeHTML(category)}
-      </div>
-
-      <div class="popup-score">
-        Priority score:
-        <strong>
-          ${score}/100
-        </strong>
-      </div>
-
-      <div>
-        ${formatDate(
-          event.geometry?.at(-1)?.date
-        )}
-      </div>
-
-      ${
-        event.sources?.[0]?.url
-          ? `
-            <a
-              class="popup-link"
-              href="${escapeHTML(
-                event.sources[0].url
-              )}"
-              target="_blank"
-              rel="noopener noreferrer">
-              View NASA source ↗
-            </a>
-          `
-          : ""
-      }
-    `);
-
-    marker.addTo(markers);
-
-  });
-}
-
-
-/* ================================
-   EVENT FEED
-================================ */
-
-function renderFeed(events) {
-
-  eventList.innerHTML = "";
-
-  const visibleEvents =
-    events.slice(0, 60);
+/* =========================================================
+   DYNAMIC SUMMARY PANEL
+   ========================================================= */
+
+function ensureExtraPanels() {
 
   if (
-    visibleEvents.length === 0
+    document.getElementById(
+      "tpSummaryPanel"
+    )
   ) {
+    return;
+  }
 
-    eventList.innerHTML =
-      `
-      <div class="empty">
-        No events match your filters.
+  const controls =
+    document.querySelector(
+      ".controls"
+    );
+
+  if (!controls) return;
+
+  const summary =
+    document.createElement("section");
+
+  summary.id =
+    "tpSummaryPanel";
+
+  summary.className =
+    "tp-extra";
+
+  summary.innerHTML = `
+    <div class="tp-summary-grid">
+
+      <div class="tp-mini">
+        <span>Visible events</span>
+        <strong id="tpVisible">0</strong>
       </div>
-      `;
+
+      <div class="tp-mini">
+        <span>Recent events</span>
+        <strong id="tpRecent">0</strong>
+      </div>
+
+      <div class="tp-mini">
+        <span>Saved events</span>
+        <strong id="tpSaved">0</strong>
+      </div>
+
+      <div class="tp-mini">
+        <span>Sources available</span>
+        <strong id="tpSources">0</strong>
+      </div>
+
+    </div>
+
+    <div class="tp-toolbar">
+
+      <label>
+        <span class="tp-muted">Sort:</span>
+
+        <select id="tpSort">
+          <option value="priority">
+            Highest priority
+          </option>
+
+          <option value="recent">
+            Most recent
+          </option>
+
+          <option value="oldest">
+            Oldest
+          </option>
+
+          <option value="name">
+            Name A–Z
+          </option>
+        </select>
+      </label>
+
+      <button id="tpWatchOnly">
+        ★ Saved only
+      </button>
+
+      <button id="tpExport">
+        Export watchlist
+      </button>
+
+      <button id="tpFit">
+        Fit map to results
+      </button>
+
+    </div>
+  `;
+
+  controls.insertAdjacentElement(
+    "afterend",
+    summary
+  );
+
+  $("tpSort").addEventListener(
+    "change",
+    applyFilters
+  );
+
+  $("tpWatchOnly").addEventListener(
+    "click",
+    toggleSavedOnly
+  );
+
+  $("tpExport").addEventListener(
+    "click",
+    exportWatchlist
+  );
+
+  $("tpFit").addEventListener(
+    "click",
+    fitMapToResults
+  );
+}
+
+/* =========================================================
+   ALERT BANNER
+   ========================================================= */
+
+function renderAlertBanner(events) {
+
+  let existing =
+    document.getElementById(
+      "tpAlertBanner"
+    );
+
+  if (!existing) {
+
+    existing =
+      document.createElement("div");
+
+    existing.id =
+      "tpAlertBanner";
+
+    existing.className =
+      "tp-alert";
+
+    const main =
+      document.querySelector("main");
+
+    if (main) {
+      main.insertBefore(
+        existing,
+        main.children[1]
+      );
+    }
+  }
+
+  if (!events.length) {
+    existing.innerHTML = `
+      <div class="tp-alert-title">
+        No matching events
+      </div>
+
+      <div class="tp-alert-text">
+        Try changing your filters.
+      </div>
+    `;
 
     return;
   }
 
-  visibleEvents.forEach(event => {
+  const top =
+    [...events]
+      .sort(
+        (a, b) =>
+          scoreEvent(b) -
+          scoreEvent(a)
+      )[0];
 
-    const score =
-      scoreEvent(event);
+  const score =
+    scoreEvent(top);
 
-    const category =
-      event.categories?.[0]?.title ||
-      "Earth event";
+  if (score < 60) {
 
-    const date =
-      event.geometry?.at(-1)?.date;
+    existing.style.borderColor =
+      "rgba(98,230,189,.28)";
 
-    const source =
-      event.sources?.[0]?.url;
+    existing.style.background =
+      "rgba(30,90,75,.12)";
 
-    const item =
-      document.createElement("article");
-
-    item.className =
-      "event";
-
-    item.innerHTML = `
-
-      <div class="event-top">
-
-        <div>
-
-          <h4>
-            ${escapeHTML(
-              event.title ||
-              "Unnamed event"
-            )}
-          </h4>
-
-          <small>
-            ${escapeHTML(category)}
-            •
-            ${formatDate(date)}
-          </small>
-
-        </div>
-
-        <span
-          class="badge ${getScoreClass(score)}"
-        >
-          ${getScoreLabel(score)}
-          ${score}
-        </span>
-
+    existing.innerHTML = `
+      <div class="tp-alert-title">
+        🟢 No major TerraPulse priority signal
       </div>
 
-      <p>
-        TerraPulse priority score:
-        ${score}/100.
-        Score is based on event type,
-        location availability and metadata.
-      </p>
-
-      <div class="event-actions">
-
-        <small>
-          ID:
+      <div class="tp-alert-text">
+        The highest current score is
+        ${score}/100 for
+        <strong>
           ${escapeHTML(
-            event.id ||
-            "unknown"
+            top.title ||
+            "Unnamed event"
           )}
-        </small>
-
-        ${
-          source
-            ? `
-              <a
-                href="${escapeHTML(source)}"
-                target="_blank"
-                rel="noopener noreferrer">
-                Source ↗
-              </a>
-            `
-            : ""
-        }
-
+        </strong>.
       </div>
     `;
 
-    eventList.appendChild(item);
+  } else {
 
-  });
-}
-
-
-/* ================================
-   DASHBOARD
-================================ */
-
-function updateDashboard(events) {
-
-  filteredEvents =
-    events;
-
-  const categorySet =
-    new Set();
-
-  events.forEach(event => {
-
-    (event.categories || [])
-      .forEach(category => {
-
-        if (category.title) {
-          categorySet.add(
-            category.title
-          );
-        }
-
-      });
-
-  });
-
-  const high =
-    events.filter(
-      event =>
-        scoreEvent(event) >= 70
-    ).length;
-
-  eventCount.textContent =
-    allEvents.length
-      .toLocaleString();
-
-  categoryCount.textContent =
-    categorySet.size;
-
-  highCount.textContent =
-    high.toLocaleString();
-
-  feedMeta.textContent =
-    `${events.length.toLocaleString()}
-     matching events`;
-
-  mapMeta.textContent =
-    `${events.length.toLocaleString()}
-     shown`;
-
-  renderMarkers(events);
-
-  renderFeed(events);
-
-  renderDangerZone(events);
-}
-
-
-/* ================================
-   FILTERS
-================================ */
-
-function applyFilters() {
-
-  const search =
-    searchInput.value
-      .trim()
-      .toLowerCase();
-
-  const selectedCategory =
-    categorySelect.value;
-
-  const selectedScore =
-    scoreSelect.value;
-
-  const result =
-    allEvents.filter(event => {
-
-      const title =
-        (event.title || "")
-          .toLowerCase();
-
-      const categoryNames =
-        (event.categories || [])
-          .map(
-            category =>
-              category.title || ""
-          )
-          .join(" ")
-          .toLowerCase();
-
-      const matchesSearch =
-        !search ||
-        title.includes(search) ||
-        categoryNames.includes(search);
-
-      const matchesCategory =
-        selectedCategory === "all" ||
-        (event.categories || [])
-          .some(
-            category =>
-              category.id ===
-              selectedCategory
-          );
-
-      const score =
-        scoreEvent(event);
-
-      const matchesScore =
-        selectedScore === "all" ||
-
-        (
-          selectedScore === "high" &&
-          score >= 70
-        ) ||
-
-        (
-          selectedScore === "medium" &&
-          score >= 40 &&
-          score < 70
-        ) ||
-
-        (
-          selectedScore === "low" &&
-          score < 40
-        );
-
-      return (
-        matchesSearch &&
-        matchesCategory &&
-        matchesScore
-      );
-
-    });
-
-  updateDashboard(result);
-}
-
-
-/* ================================
-   LOAD NASA DATA
-================================ */
-
-async function loadEvents() {
-
-  refreshBtn.disabled =
-    true;
-
-  refreshBtn.textContent =
-    "Loading…";
-
-  try {
-
-    const response =
-      await fetch(API_URL);
-
-    if (!response.ok) {
-
-      throw new Error(
-        `NASA EONET returned ${response.status}`
-      );
-
-    }
-
-    const data =
-      await response.json();
-
-    allEvents =
-      Array.isArray(data.events)
-        ? data.events
-        : [];
-
-    updateCategoryOptions();
-
-    lastRefresh.textContent =
-      new Date().toLocaleTimeString(
-        [],
-        {
-          hour: "2-digit",
-          minute: "2-digit"
-        }
-      );
-
-    applyFilters();
-
-    showToast(
-      `${allEvents.length}
-       NASA events loaded`
-    );
-
-  } catch (error) {
-
-    console.error(error);
-
-    eventList.innerHTML = `
-      <div class="empty">
-
-        Could not load NASA EONET data.
-
-        <br><br>
-
-        Please check your internet
-        connection and try Refresh.
-
-      </div>
-    `;
-
-    showToast(
-      "Data loading failed"
-    );
-
-  } finally {
-
-    refreshBtn.disabled =
-      false;
-
-    refreshBtn.textContent =
-      "↻ Refresh";
-  }
-}
-
-
-/* ================================
-   EVENT LISTENERS
-================================ */
-
-searchInput.addEventListener(
-  "input",
-  applyFilters
-);
-
-categorySelect.addEventListener(
-  "change",
-  applyFilters
-);
-
-scoreSelect.addEventListener(
-  "change",
-  applyFilters
-);
-
-
-clearBtn.addEventListener(
-  "click",
-  () => {
-
-    searchInput.value =
-      "";
-
-    categorySelect.value =
-      "all";
-
-    scoreSelect.value =
-      "all";
-
-    applyFilters();
-
-  }
-);
-
-
-refreshBtn.addEventListener(
-  "click",
-  loadEvents
-);
-
-
-/* ================================
-   START TERRAPULSE
-================================ */
-
-createDangerZone();
-
-loadEvents();
+    existing.style.borderColor 
