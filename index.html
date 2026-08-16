@@ -2,146 +2,157 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#07111f">
-  <title>TerraPulse — Live Earth Event Monitor</title>
-  <meta name="description" content="An open-source Earth event dashboard powered by NASA EONET data.">
-  <link rel="preconnect" href="https://unpkg.com">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIINfQ3wQm+4zK9k8pVxX1e2h9Qx8Q5V7YQ="
-        crossorigin="">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="TerraPulse — interactive Earth event intelligence using NASA EONET open data.">
+  <title>TerraPulse — Earth Event Intelligence</title>
+
   <link rel="stylesheet" href="styles.css">
+
+  <link rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 </head>
+
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <div class="brand-mark">TP</div>
-      <div>
-        <h1>TerraPulse</h1>
-        <p>Live Earth event intelligence</p>
-      </div>
-    </div>
-    <div class="top-actions">
-      <span id="connection" class="status-pill">Connecting…</span>
-      <button id="refreshBtn" class="ghost-btn" type="button">↻ Refresh</button>
-    </div>
-  </header>
 
-  <main>
-    <section class="hero">
-      <div>
-        <p class="eyebrow">NASA EONET • OPEN DATA</p>
-        <h2>See Earth's changing signals in one place.</h2>
-        <p class="hero-copy">
-          TerraPulse turns NASA's continuously updated natural-event metadata into a
-          simple map, filterable event feed, and explainable priority score.
-        </p>
-      </div>
-      <div class="hero-card">
-        <div class="hero-number" id="lastUpdated">—</div>
-        <div class="hero-label">Last successful data refresh</div>
-      </div>
-    </section>
-
-    <section class="stats" aria-label="Earth event statistics">
-      <article class="stat-card"><span>Open events</span><strong id="totalEvents">—</strong></article>
-      <article class="stat-card"><span>Event categories</span><strong id="categoryCount">—</strong></article>
-      <article class="stat-card"><span>High-priority signals</span><strong id="highPriority">—</strong></article>
-      <article class="stat-card"><span>Saved watchlist</span><strong id="savedCount">0</strong></article>
-    </section>
-
-    <section class="controls panel">
-      <div class="control-group search-group">
-        <label for="search">Search events</label>
-        <input id="search" type="search" placeholder="e.g. wildfire, volcano, storm">
-      </div>
-      <div class="control-group">
-        <label for="category">Category</label>
-        <select id="category"><option value="all">All categories</option></select>
-      </div>
-      <div class="control-group">
-        <label for="priority">Priority</label>
-        <select id="priority">
-          <option value="all">All priorities</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </select>
-      </div>
-      <label class="toggle">
-        <input id="savedOnly" type="checkbox">
-        <span>Saved only</span>
-      </label>
-      <button id="resetBtn" class="ghost-btn" type="button">Reset</button>
-    </section>
-
-    <section class="workspace">
-      <div class="map-panel panel">
-        <div class="panel-heading">
-          <div>
-            <h3>Global event map</h3>
-            <p>Click a marker to inspect an event.</p>
-          </div>
-          <span id="mapCount" class="muted">0 shown</span>
-        </div>
-        <div id="map" role="application" aria-label="Map of NASA Earth events"></div>
-      </div>
-
-      <aside class="feed-panel panel">
-        <div class="panel-heading">
-          <div>
-            <h3>Event feed</h3>
-            <p id="feedSummary">Loading…</p>
-          </div>
-        </div>
-        <div id="feed" class="feed" aria-live="polite"></div>
-      </aside>
-    </section>
-
-    <section class="how panel">
-      <div>
-        <p class="eyebrow">HOW IT WORKS</p>
-        <h3>From raw NASA data to a useful signal</h3>
-      </div>
-      <div class="steps">
-        <div><b>01</b><span>Fetch</span><p>TerraPulse requests open-event metadata from NASA EONET.</p></div>
-        <div><b>02</b><span>Normalize</span><p>Events are grouped, mapped, searched and sorted consistently.</p></div>
-        <div><b>03</b><span>Prioritize</span><p>A transparent local heuristic highlights signals worth checking first.</p></div>
-        <div><b>04</b><span>Remember</span><p>People can save events locally for a personal watchlist.</p></div>
-      </div>
-    </section>
-
-    <section class="method panel">
-      <div>
-        <p class="eyebrow">IMPORTANT</p>
-        <h3>Priority is a prototype signal, not an official warning.</h3>
-        <p>
-          The score is calculated by TerraPulse from event category and available
-          metadata. It does not predict danger and should never replace official
-          emergency services, government alerts, or scientific analysis.
-        </p>
-      </div>
-      <div class="legend">
-        <span><i class="dot high"></i> High</span>
-        <span><i class="dot medium"></i> Medium</span>
-        <span><i class="dot low"></i> Low</span>
-      </div>
-    </section>
-  </main>
-
-  <footer>
-    <p>TerraPulse is an independent student project. Data source: NASA EONET.</p>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">TP</div>
     <div>
-      <a href="https://eonet.gsfc.nasa.gov/" target="_blank" rel="noreferrer">NASA EONET</a>
-      <a href="https://github.com/" target="_blank" rel="noreferrer">Open-source</a>
+      <h1>TerraPulse</h1>
+      <p>Live Earth event intelligence</p>
     </div>
-  </footer>
+  </div>
 
-  <div id="toast" class="toast" role="status"></div>
+  <button id="refreshBtn" class="button">↻ Refresh</button>
+</header>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-          crossorigin=""></script>
-  <script src="app.js"></script>
+<main>
+
+<section class="hero">
+  <div class="eyebrow">NASA EONET • OPEN DATA</div>
+
+  <h2>See Earth's changing signals in one place.</h2>
+
+  <p>
+    Explore natural events from NASA EONET through a clean map,
+    explainable signal score, filters and event details.
+  </p>
+</section>
+
+<section class="stats">
+
+  <article>
+    <span>Open events</span>
+    <strong id="eventCount">—</strong>
+  </article>
+
+  <article>
+    <span>Categories</span>
+    <strong id="categoryCount">—</strong>
+  </article>
+
+  <article>
+    <span>High signals</span>
+    <strong id="highCount">—</strong>
+  </article>
+
+  <article>
+    <span>Last refresh</span>
+    <strong id="lastRefresh">—</strong>
+  </article>
+
+</section>
+
+<section class="controls">
+
+  <label>
+    Search
+    <input
+      id="searchInput"
+      type="search"
+      placeholder="e.g. wildfire, storm">
+  </label>
+
+  <label>
+    Category
+    <select id="categorySelect">
+      <option value="all">All categories</option>
+    </select>
+  </label>
+
+  <label>
+    Signal
+    <select id="scoreSelect">
+      <option value="all">All signals</option>
+      <option value="high">High (70+)</option>
+      <option value="medium">Medium (40–69)</option>
+      <option value="low">Low (&lt;40)</option>
+    </select>
+  </label>
+
+  <button id="clearBtn" class="button secondary">
+    Clear
+  </button>
+
+</section>
+
+<section class="panel">
+
+  <div class="panel-head">
+
+    <div>
+      <h3>Global event map</h3>
+      <p id="mapMeta">Loading events…</p>
+    </div>
+
+    <span class="live-dot">LIVE</span>
+
+  </div>
+
+  <div id="map"></div>
+
+</section>
+
+<section class="panel">
+
+  <div class="panel-head">
+
+    <div>
+      <h3>Event feed</h3>
+      <p id="feedMeta">Loading…</p>
+    </div>
+
+  </div>
+
+  <div id="eventList" class="event-list"></div>
+
+</section>
+
+</main>
+
+<footer>
+
+  <p>
+    TerraPulse is an educational visualization project.
+    Data source: NASA EONET.
+  </p>
+
+  <a
+    href="https://eonet.gsfc.nasa.gov/"
+    target="_blank"
+    rel="noopener">
+    NASA EONET source ↗
+  </a>
+
+</footer>
+
+<div id="toast" class="toast"></div>
+
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
+</script>
+
+<script src="app.js"></script>
+
 </body>
 </html>
