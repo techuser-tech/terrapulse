@@ -1,202 +1,493 @@
-const API = "https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=1000";
-const FALLBACK = {
-  events: [
-    {id:"demo-1",title:"Demo Wildfire Signal",categories:[{id:"wildfires",title:"Wildfires"}],geometry:[{date:"2026-08-01T00:00:00Z",type:"Point",coordinates:[-118.2,34.1]}],sources:[]},
-    {id:"demo-2",title:"Demo Severe Storm Signal",categories:[{id:"severeStorms",title:"Severe Storms"}],geometry:[{date:"2026-08-02T00:00:00Z",type:"Point",coordinates:[77.2,28.6]}],sources:[]},
-    {id:"demo-3",title:"Demo Volcano Signal",categories:[{id:"volcanoes",title:"Volcanoes"}],geometry:[{date:"2026-08-03T00:00:00Z",type:"Point",coordinates:[139.7,35.7]}],sources:[]}
-  ]
-};
+const API_URL =
+  "https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=1000";
 
 let allEvents = [];
-let shownEvents = [];
-let map;
-let markers = [];
-const saved = new Set(JSON.parse(localStorage.getItem("terrapulse-saved") || "[]"));
+let filteredEvents = [];
 
-const $ = id => document.getElementById(id);
-const categoryNames = new Map();
+const map = L.map("map", {
+  worldCopyJump: true
+}).setView([20, 0], 2);
 
-function escapeHTML(value=""){
-  return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
-}
-
-function getCategory(event){
-  return event.categories?.[0]?.title || "Other";
-}
-function getPriority(event){
-  const id = (event.categories?.[0]?.id || "").toLowerCase();
-  if (/(wildfire|severe|volcano|flood|earthquake|landslide|dust)/.test(id)) return "high";
-  if (/(temperature|storm|ice|drought|water)/.test(id)) return "medium";
-  return "low";
-}
-function getPoint(event){
-  const geo = event.geometry?.[event.geometry.length - 1];
-  if (!geo) return null;
-  if (geo.type === "Point" && Array.isArray(geo.coordinates)) {
-    return [geo.coordinates[1], geo.coordinates[0]];
+L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  {
+    maxZoom: 18,
+    attribution: "&copy; OpenStreetMap contributors"
   }
-  if (geo.type === "Polygon" && Array.isArray(geo.coordinates?.[0])) {
-    const ring = geo.coordinates[0];
-    if (!ring.length) return null;
-    let lon = 0, lat = 0;
-    ring.forEach(p => { lon += p[0]; lat += p[1]; });
-    return [lat / ring.length, lon / ring.length];
+).addTo(map);
+
+const markers = L.layerGroup().addTo(map);
+
+const eventCount = document.getElementById("eventCount");
+const categoryCount = document.getElementById("categoryCount");
+const highCount = document.getElementById("highCount");
+const lastRefresh = document.getElementById("lastRefresh");
+
+const categorySelect = document.getElementById("categorySelect");
+const scoreSelect = document.getElementById("scoreSelect");
+const searchInput = document.getElementById("searchInput");
+
+const eventList = document.getElementById("eventList");
+const feedMeta = document.getElementById("feedMeta");
+const mapMeta = document.getElementById("mapMeta");
+
+const refreshBtn = document.getElementById("refreshBtn");
+const clearBtn = document.getElementById("clearBtn");
+
+const toast = document.getElementById("toast");
+
+function showToast(message) {
+  toast.textContent = message;
+  toast.classList.add("show");
+
+  setTimeout(() => {
+    toast.classList.remove("show");
+  }, 2200);
+}
+
+function scoreEvent(event) {
+  const title = (event.title || "").toLowerCase();
+  const categories = (event.categories || [])
+    .map(c => c.title)
+    .join(" ")
+    .toLowerCase();
+
+  let score = 25;
+
+  const highWords = [
+    "volcano",
+    "earthquake",
+    "tsunami",
+    "wildfire",
+    "hurricane",
+    "cyclone",
+    "typhoon",
+    "tropical storm"
+  ];
+
+  const mediumWords = [
+    "flood",
+    "dust",
+    "storm",
+    "landslide",
+    "severe storm",
+    "iceberg"
+  ];
+
+  if (highWords.some(word =>
+    title.includes(word) || categories.includes(word)
+  )) {
+    score += 55;
+  } else if (mediumWords.some(word =>
+    title.includes(word) || categories.includes(word)
+  )) {
+    score += 30;
   }
+
+  if (event.geometry && event.geometry.length > 0) {
+    score += 10;
+  }
+
+  return Math.min(score, 100);
+}
+
+function getCoordinates(event) {
+  if (!event.geometry || event.geometry.length === 0) {
+    return null;
+  }
+
+  const geometry =
+    event.geometry[event.geometry.length - 1];
+
+  if (!geometry || !geometry.coordinates) {
+    return null;
+  }
+
+  if (geometry.type === "Point") {
+    return [
+      geometry.coordinates[1],
+      geometry.coordinates[0]
+    ];
+  }
+
   return null;
 }
-function formatDate(value){
-  if(!value) return "Date unavailable";
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString([], {dateStyle:"medium",timeStyle:"short"});
-}
-function saveState(){
-  localStorage.setItem("terrapulse-saved", JSON.stringify([...saved]));
-  $("savedCount").textContent = saved.size;
-}
-function toast(message){
-  const t=$("toast"); t.textContent=message; t.classList.add("show");
-  clearTimeout(toast.timer); toast.timer=setTimeout(()=>t.classList.remove("show"),2200);
-}
-function markerIcon(priority){
-  const color = priority==="high" ? "#ff7d8a" : priority==="medium" ? "#ffc96b" : "#70d6a1";
-  return L.divIcon({
-    className:"",
-    html:`<span style="display:block;width:14px;height:14px;border-radius:50%;background:${color};border:3px solid rgba(255,255,255,.85);box-shadow:0 0 0 5px rgba(255,255,255,.08)"></span>`,
-    iconSize:[14,14],iconAnchor:[7,7]
-  });
+
+function getScoreClass(score) {
+  if (score >= 70) return "high";
+  if (score >= 40) return "medium";
+  return "low";
 }
 
-async function loadEvents(){
-  $("connection").textContent="Updating…";
-  try{
-    const res=await fetch(API,{cache:"no-store"});
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data=await res.json();
-    allEvents = data.events || [];
-    $("connection").textContent="● NASA data live";
-    $("connection").style.color="var(--low)";
-    $("lastUpdated").textContent=new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
-  }catch(err){
-    allEvents = FALLBACK.events;
-    $("connection").textContent="Offline demo data";
-    $("connection").style.color="var(--medium)";
-    toast("NASA data could not be reached; showing demo events.");
+function getScoreLabel(score) {
+  if (score >= 70) return "HIGH";
+  if (score >= 40) return "MEDIUM";
+  return "LOW";
+}
+
+function formatDate(dateString) {
+  if (!dateString) return "Unknown date";
+
+  const date = new Date(dateString);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown date";
   }
-  categoryNames.clear();
-  allEvents.forEach(e => {
-    e.categories?.forEach(c => categoryNames.set(c.id,c.title));
+
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
   });
-  populateCategories();
-  update();
 }
 
-function populateCategories(){
-  const select=$("category");
-  const current=select.value;
-  select.innerHTML='<option value="all">All categories</option>';
-  [...categoryNames.entries()].sort((a,b)=>a[1].localeCompare(b[1])).forEach(([id,title])=>{
-    const option=document.createElement("option");
-    option.value=id; option.textContent=title; select.appendChild(option);
-  });
-  if([...select.options].some(o=>o.value===current)) select.value=current;
-}
+function getCategories(events) {
+  const categories = new Map();
 
-function update(){
-  const q=$("search").value.trim().toLowerCase();
-  const cat=$("category").value;
-  const pri=$("priority").value;
-  const savedOnly=$("savedOnly").checked;
-
-  shownEvents=allEvents.filter(e=>{
-    const text=(e.title+" "+getCategory(e)).toLowerCase();
-    const categoryOk=cat==="all" || e.categories?.some(c=>c.id===cat);
-    const priorityOk=pri==="all" || getPriority(e)===pri;
-    const savedOk=!savedOnly || saved.has(e.id);
-    return text.includes(q) && categoryOk && priorityOk && savedOk;
-  }).sort((a,b)=>{
-    const rank={high:0,medium:1,low:2};
-    return rank[getPriority(a)]-rank[getPriority(b)] || getCategory(a).localeCompare(getCategory(b));
+  events.forEach(event => {
+    (event.categories || []).forEach(category => {
+      if (category && category.title) {
+        categories.set(
+          category.id || category.title,
+          category.title
+        );
+      }
+    });
   });
 
-  renderStats();
-  renderFeed();
-  renderMap();
+  return [...categories.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]));
 }
-function renderStats(){
-  $("totalEvents").textContent=allEvents.length.toLocaleString();
-  $("categoryCount").textContent=categoryNames.size;
-  $("highPriority").textContent=allEvents.filter(e=>getPriority(e)==="high").length.toLocaleString();
-  $("savedCount").textContent=saved.size;
-  $("mapCount").textContent=`${shownEvents.length} shown`;
-  $("feedSummary").textContent=`${shownEvents.length} matching event${shownEvents.length===1?"":"s"}`;
+
+function updateCategoryOptions() {
+  const current = categorySelect.value;
+
+  categorySelect.innerHTML =
+    '<option value="all">All categories</option>';
+
+  getCategories(allEvents).forEach(([id, title]) => {
+    const option = document.createElement("option");
+
+    option.value = id;
+    option.textContent = title;
+
+    categorySelect.appendChild(option);
+  });
+
+  if (
+    [...categorySelect.options]
+      .some(option => option.value === current)
+  ) {
+    categorySelect.value = current;
+  }
 }
-function renderFeed(){
-  const feed=$("feed");
-  if(!shownEvents.length){feed.innerHTML='<div class="empty">No events match these filters.</div>';return;}
-  feed.innerHTML=shownEvents.slice(0,120).map(e=>{
-    const p=getPriority(e), cat=getCategory(e), isSaved=saved.has(e.id);
-    return `<article class="event-card" data-id="${escapeHTML(e.id)}">
-      <div class="event-top">
-        <div>
-          <div class="event-title">${escapeHTML(e.title)}</div>
-          <div class="event-meta">${escapeHTML(cat)} · ${formatDate(e.geometry?.at(-1)?.date)}</div>
-        </div>
-        <button class="save-btn ${isSaved?"saved":""}" data-save="${escapeHTML(e.id)}" aria-label="${isSaved?"Remove from":"Save to"} watchlist">${isSaved?"★":"☆"}</button>
+
+function renderMarkers(events) {
+  markers.clearLayers();
+
+  events.forEach(event => {
+    const coordinates = getCoordinates(event);
+
+    if (!coordinates) return;
+
+    const score = scoreEvent(event);
+    const category =
+      event.categories?.[0]?.title || "Earth event";
+
+    const marker = L.circleMarker(coordinates, {
+      radius: score >= 70 ? 8 : 6,
+      weight: 2,
+      opacity: 0.9,
+      fillOpacity: 0.75
+    });
+
+    marker.bindPopup(`
+      <div class="popup-title">
+        ${escapeHTML(event.title || "Unnamed event")}
       </div>
-      <div class="badges"><span class="badge ${p}">${p.toUpperCase()} SIGNAL</span><span class="badge">${e.sources?.length || 0} source${(e.sources?.length||0)===1?"":"s"}</span></div>
-    </article>`;
-  }).join("");
 
-  feed.querySelectorAll("[data-save]").forEach(btn=>btn.addEventListener("click",ev=>{
-    ev.stopPropagation();
-    const id=btn.dataset.save;
-    if(saved.has(id)) saved.delete(id); else saved.add(id);
-    saveState(); update();
-  }));
-  feed.querySelectorAll(".event-card").forEach(card=>card.addEventListener("click",()=>{
-    const event=allEvents.find(e=>e.id===card.dataset.id);
-    const point=getPoint(event);
-    if(point && map){map.setView(point,Math.max(map.getZoom(),4));}
-    showPopup(event);
-  }));
-}
-function showPopup(event){
-  const point=getPoint(event);
-  if(!point || !map) return;
-  const p=getPriority(event);
-  const source=event.sources?.[0]?.url;
-  const html=`<strong>${escapeHTML(event.title)}</strong>
-    <br><span style="opacity:.7">${escapeHTML(getCategory(event))} · ${p} signal</span>
-    <br><span style="opacity:.7">${formatDate(event.geometry?.at(-1)?.date)}</span>
-    ${source?`<br><br><a href="${escapeHTML(source)}" target="_blank" rel="noreferrer">Open source ↗</a>`:""}`;
-  L.popup().setLatLng(point).setContent(html).openOn(map);
-}
-function renderMap(){
-  markers.forEach(m=>m.remove()); markers=[];
-  shownEvents.forEach(e=>{
-    const point=getPoint(e); if(!point) return;
-    const marker=L.marker(point,{icon:markerIcon(getPriority(e))}).addTo(map);
-    marker.on("click",()=>showPopup(e));
-    markers.push(marker);
+      <div>
+        ${escapeHTML(category)}
+      </div>
+
+      <div class="popup-score">
+        Signal score: ${score}/100
+      </div>
+
+      <div>
+        ${formatDate(event.geometry?.at(-1)?.date)}
+      </div>
+
+      ${
+        event.sources?.[0]?.url
+          ? `<a
+              class="popup-link"
+              href="${event.sources[0].url}"
+              target="_blank"
+              rel="noopener">
+              View source ↗
+            </a>`
+          : ""
+      }
+    `);
+
+    marker.addTo(markers);
   });
 }
 
-function initMap(){
-  map=L.map("map",{worldCopyJump:true}).setView([20,0],2);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{
-    maxZoom:18,
-    attribution:'&copy; OpenStreetMap contributors'
-  }).addTo(map);
+function renderFeed(events) {
+  eventList.innerHTML = "";
+
+  const visibleEvents = events.slice(0, 60);
+
+  if (visibleEvents.length === 0) {
+    eventList.innerHTML =
+      '<div class="empty">No events match your filters.</div>';
+
+    return;
+  }
+
+  visibleEvents.forEach(event => {
+    const score = scoreEvent(event);
+    const category =
+      event.categories?.[0]?.title || "Earth event";
+
+    const date =
+      event.geometry?.at(-1)?.date;
+
+    const source =
+      event.sources?.[0]?.url;
+
+    const item = document.createElement("article");
+
+    item.className = "event";
+
+    item.innerHTML = `
+      <div class="event-top">
+
+        <div>
+          <h4>${escapeHTML(event.title || "Unnamed event")}</h4>
+
+          <small>
+            ${escapeHTML(category)} • ${formatDate(date)}
+          </small>
+        </div>
+
+        <span class="badge ${getScoreClass(score)}">
+          ${getScoreLabel(score)} ${score}
+        </span>
+
+      </div>
+
+      <p>
+        TerraPulse signal score is based on event type,
+        available location data and event metadata.
+      </p>
+
+      <div class="event-actions">
+
+        <small>
+          ID: ${escapeHTML(event.id || "unknown")}
+        </small>
+
+        ${
+          source
+            ? `<a
+                href="${source}"
+                target="_blank"
+                rel="noopener">
+                Source ↗
+              </a>`
+            : ""
+        }
+
+      </div>
+    `;
+
+    eventList.appendChild(item);
+  });
 }
 
-["search","category","priority","savedOnly"].forEach(id=>{
-  $(id).addEventListener(id==="search"?"input":"change",update);
-});
-$("resetBtn").addEventListener("click",()=>{
-  $("search").value="";$("category").value="all";$("priority").value="all";$("savedOnly").checked=false;update();
-});
-$("refreshBtn").addEventListener("click",loadEvents);
+function updateDashboard(events) {
+  filteredEvents = events;
 
-initMap();
-saveState();
+  const categorySet = new Set();
+
+  events.forEach(event => {
+    (event.categories || []).forEach(category => {
+      if (category.title) {
+        categorySet.add(category.title);
+      }
+    });
+  });
+
+  const high = events.filter(
+    event => scoreEvent(event) >= 70
+  ).length;
+
+  eventCount.textContent =
+    allEvents.length.toLocaleString();
+
+  categoryCount.textContent =
+    categorySet.size;
+
+  highCount.textContent =
+    high.toLocaleString();
+
+  feedMeta.textContent =
+    `${events.length.toLocaleString()} matching events`;
+
+  mapMeta.textContent =
+    `${events.length.toLocaleString()} shown`;
+
+  renderMarkers(events);
+  renderFeed(events);
+}
+
+function applyFilters() {
+  const search =
+    searchInput.value.trim().toLowerCase();
+
+  const selectedCategory =
+    categorySelect.value;
+
+  const selectedScore =
+    scoreSelect.value;
+
+  const result = allEvents.filter(event => {
+
+    const title =
+      (event.title || "").toLowerCase();
+
+    const categoryNames =
+      (event.categories || [])
+        .map(category => category.title)
+        .join(" ")
+        .toLowerCase();
+
+    const matchesSearch =
+      !search ||
+      title.includes(search) ||
+      categoryNames.includes(search);
+
+    const matchesCategory =
+      selectedCategory === "all" ||
+      (event.categories || [])
+        .some(category =>
+          category.id === selectedCategory
+        );
+
+    const score =
+      scoreEvent(event);
+
+    const matchesScore =
+      selectedScore === "all" ||
+      (selectedScore === "high" && score >= 70) ||
+      (selectedScore === "medium" &&
+        score >= 40 &&
+        score < 70) ||
+      (selectedScore === "low" && score < 40);
+
+    return (
+      matchesSearch &&
+      matchesCategory &&
+      matchesScore
+    );
+  });
+
+  updateDashboard(result);
+}
+
+function escapeHTML(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+async function loadEvents() {
+  refreshBtn.disabled = true;
+  refreshBtn.textContent = "Loading…";
+
+  try {
+    const response = await fetch(API_URL);
+
+    if (!response.ok) {
+      throw new Error(
+        `NASA EONET returned ${response.status}`
+      );
+    }
+
+    const data = await response.json();
+
+    allEvents = Array.isArray(data.events)
+      ? data.events
+      : [];
+
+    updateCategoryOptions();
+
+    lastRefresh.textContent =
+      new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+
+    applyFilters();
+
+    showToast(
+      `${allEvents.length} NASA events loaded`
+    );
+
+  } catch (error) {
+
+    console.error(error);
+
+    eventList.innerHTML = `
+      <div class="empty">
+        Could not load NASA EONET data.
+        Please check your internet connection
+        and try Refresh.
+      </div>
+    `;
+
+    showToast("Data loading failed");
+
+  } finally {
+
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = "↻ Refresh";
+  }
+}
+
+searchInput.addEventListener(
+  "input",
+  applyFilters
+);
+
+categorySelect.addEventListener(
+  "change",
+  applyFilters
+);
+
+scoreSelect.addEventListener(
+  "change",
+  applyFilters
+);
+
+clearBtn.addEventListener("click", () => {
+
+  searchInput.value = "";
+  categorySelect.value = "all";
+  scoreSelect.value = "all";
+
+  applyFilters();
+});
+
+refreshBtn.addEventListener(
+  "click",
+  loadEvents
+);
+
 loadEvents();
